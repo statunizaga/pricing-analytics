@@ -1,0 +1,1380 @@
+---
+title: "Pricing Analysis"
+author: "Daniel Incappueño Ttito<br />    Data Scientist"
+date: "`r Sys.Date()`" # rmdformats:downcute,readthedown,robobook
+output: 
+  rmdformats::readthedown:
+    # code_folding: show
+    fig_width: 17
+    fig_height: 6
+    self_contained: true
+    thumbnails: false
+    lightbox: true # Hacer zoom a las imagenes
+    gallery: true # Rotar entre imagenes
+    highlight: kate
+---
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(echo = FALSE,# Prevents code but not the results
+                      message = FALSE,
+                      warning = FALSE)
+
+knitr::opts_knit$set(root.dir = dirname(rstudioapi::getActiveDocumentContext()$path))
+# https://towardsdatascience.com/five-r-markdown-tricks-that-you-may-not-know-about-71e93f50c026
+```
+
+# 1. Objetivo del Analisis
+
+-   Identificar el Precio que nos permita maximizar las ventas.
+
+# 2. Descripcion del Data set
+
+**Dataset:** PostVenta de Concesionarios <br /> **Año**: Mar 2020 - Nov 2021. <br /> **Fuente :** *contactabilidad_ic.fuente.compartido_ces_postventas*. <br /> **Descripción:** Informacion de las transacciones de PostVenta de los concesionarios.
+
+# 3. Analisis Exploratorio de Datos
+
+```{r librerias}
+library(odbc)
+library(lares)
+library(readxl)
+library(rattle)
+library(ggtext)
+library(stringr)
+library(ggplot2)
+library(ggrepel)
+library(magrittr)
+library(tidyverse)
+library(lubridate)
+library(patchwork)
+library(ggfittext)
+library(data.table)
+library(kableExtra)
+library(formattable)
+library(DataExplorer)
+library(summarytools)
+library(tidylog) # tidy log necesariamente tiene que estar despues de dplyr y tidyr
+
+
+```
+
+## 4.1 Estructura de la informacion
+
+```{r}
+
+con <- DBI::dbConnect(odbc(),
+                      Driver = "SQL Server",
+                      Server = "10.110.20.59",
+                      Database = "contactabilidad_ic",
+                      UID = "user_ic",
+                      PWD = "Derco.2020")
+# 
+# ventas <- dbGetQuery(conn = con,"SELECT * FROM procesos_ic.[dbo].[view_winrate_ventas_automotriz_sell_out]")
+
+# En la Base "view_winrate_ventas_automotriz_sell_out" se han encontrado para un mismo vin y fecha de facturacion 2 o mas registros, aparecio registros que en realidad no son ventas
+
+# vts_auto <- dbGetQuery(conn = con,"SELECT * FROM procesos_sap_bwp.[dbo].[view_ventas_automotriz_sell_out_unica]")
+
+ventas_dc_maestra<- dbGetQuery(conn = con,"SELECT * FROM procesos_sap_bwp.[dbo].[view_dercocenter_automotriz_venta]")
+
+# ventas_ces_maestra<- dbGetQuery(conn = con,"SELECT * FROM procesos_sap_bwp.[dbo].[view_concesionarios_automotriz_venta]")
+
+# precios <- dbGetQuery(conn = con,"SELECT * FROM procesos_sap_bwp.[dbo].[precios2]")
+
+# anio_modelo <- dbGetQuery(conn = con,"SELECT * FROM procesos_sap_bwp.[dbo].[view_importador_automotriz_venta]")
+
+# ventas_dc_maestra %>% write_rds("01.Data/ventas_dc_maestra_2022_02_17.rds")
+setwd("C:/Users/dincappuenot/OneDrive - Grupo Derco/Escritorio/Pricing Analysis/")
+
+# vts_auto <- read_rds("01.Data/ventas_automotriz_2021_12_23.rds")
+vts_auto <- read_rds("01.Data/ventas_automotriz_2022_01_25.rds")
+ventas_dc_maestra <- read_rds("01.Data/ventas_dc_maestra_2021_12_23.rds")
+ventas_ces_maestra <- read_rds("01.Data/ventas_ces_maestra_2022_01_27.rds")
+precios <- read_rds("01.Data/precios_2021_12_23.rds")
+
+
+
+```
+
+
+```{r anio_modelo}
+
+anio_modelo <- read_rds("01.Data/anio_modelo_2022_01_24.rds")
+
+anio_modelo %>% glimpse
+
+anio_modelo %<>% distinct(vin,año_modelo)
+
+anio_modelo %<>% filter(vin!="#")
+
+anio_modelo %>% glimpse
+
+count_vin <- anio_modelo %>% 
+  group_by(vin) %>% 
+  summarise(n_anio = n_distinct(año_modelo) )
+
+
+```
+
+
+```{r base-dc-datos-maestra}
+
+ventas_dc_maestra
+
+ventas_dc_maestra$fecha_facturacion %<>% ymd
+ventas_dc_maestra$cantidad_unidades %<>% as.numeric
+
+ventas_dc_maestra_2020 <- ventas_dc_maestra %>%
+  filter(fecha_facturacion>="2020-03-01")
+
+ventas_dc_maestra_2020 %<>% distinct
+
+# Casos en la cual la suma unidades es distinta de 0 y 1.
+
+suma_unidades_vin <- ventas_dc_maestra %>%
+  group_by(vin) %>%
+  summarise(sum_cant_unidades = sum(cantidad_unidades)) %>%
+  ungroup()
+
+
+
+suma_unidades_vin$sum_cant_unidades %>% table
+
+
+
+suma_unidades_vin %>%
+  filter(sum_cant_unidades== 3) %>%
+  pull(vin) %>% paste0(collapse = "','")
+  as.data.frame
+  
+ventas_dc_maestra %>% 
+  filter(vin=="#")
+    
+
+ventas_dc_maestra %>%
+  filter(vin=="TSMYD21S3JM392406") %>%
+  select(codigo_sociedad,canal_distribucion,
+         cantidad_unidades,sector_codigo,referencia) %>%
+  glimpse
+
+
+
+# Casos en la cual el vin empieza en cantidad_unidades por -1
+
+unidad_ini <- ventas_dc_maestra_2020 %>%
+  group_by(vin) %>%
+  dplyr::slice_min(factura_sap,n=1) %>%
+  ungroup()
+
+unidad_ini$cantidad_unidades %>% table
+
+# Ventas:  Tenemos que coger el mayor factura_sap y que tenga valor 1
+
+
+ventas <- ventas_dc_maestra_2020 %>%
+  group_by(vin) %>%
+  dplyr::slice_max(factura_sap,n=1) %>%
+  ungroup() %>%
+  filter(cantidad_unidades>0)
+
+ventas$vin %>% unique %>% length
+ventas %>% nrow
+
+# # En la Base deberia existir solo 1 registro por auto ya que la base son autos nuevos
+
+```
+
+
+```{r base-ces-datos-maestra}
+
+ventas_ces_maestra %>% glimpse
+ventas_ces_maestra %>% nrow
+
+# Hay duplicados
+
+ventas_ces_maestra %>% distinct %>% nrow
+
+# Formateando la variable fecha factura
+ventas_ces_maestra$fecha_factura %<>% ymd
+
+ventas_ces_maestra %<>% distinct
+
+# Granularidad
+
+ventas_ces_maestra %>% nrow
+
+ventas_ces_maestra %$% paste0(fecha_factura,"-",vin,"-",codigo) %>% unique %>% length
+
+# Conteo por vin y fecha factura
+conteo <- ventas_ces_maestra %>% 
+  count(vin,fecha_factura)
+
+conteo %>%
+  filter(n>1) %>% 
+  head
+
+ventas_ces_maestra %>% 
+  filter(fecha_factura=="2020-09-17",vin=="JM7KF4W7AJ0105196") %>% 
+  sapply(n_distinct)
+# Diferentes en la variable codigo
+
+# Conteo por vin
+conteo <- ventas_ces_maestra %>% 
+  crosstab(vin)
+
+# Distribucion de repeticion de Vines
+conteo$n %>% table
+
+
+
+ventas_ces_maestra %>% 
+  # filter(vin=="93Y9SR5B3NJ044582") %>% glimpse
+  # filter(vin=="93Y9SR5B6LJ216657") %>% glimpse
+  filter(vin=="93YHSB15XMJ865559") %>% glimpse
+
+view(dfSummary(ventas_ces_maestra))
+
+ventas_ces_maestra %>% 
+  select(nombre,email) %>% head
+
+ventas_ces_maestra$`Precio Neto` %>% as.numeric %>% summary
+
+
+
+# # En la Base deberia existir solo 1 registro por auto ya que la base son autos nuevos
+
+```
+
+```{r}
+
+vts_auto$fecha_facturacion %<>% ymd
+
+# Creacion de Flag Si es Dercocenter o no
+vts_auto$flag_derco <- ifelse(vts_auto$sociedad=="Dercocenter","Dercocenter","Concesionario")
+
+# Distribucion de Ventas por sociedad
+
+comma_mod <- function(x)comma(x = x,digits = 0)
+
+vts_auto %>% 
+  filter(fecha_facturacion>="2020-03-01",
+         fecha_facturacion<"2022-01-01",) %>% 
+  crosstab(flag_derco) %>% 
+  ggplot(aes(x=flag_derco,y=n,fill=flag_derco,label=paste0(round(p),"%") ))+
+  geom_bar(stat="identity",color="black")+
+  # geom_fit_text(place = "top", reflow = TRUE,size=20)+
+  geom_bar_text(size=20)+
+  scale_y_continuous(labels = comma_mod)+
+  scale_fill_manual(values=c("#1F78B4","#E31A1C"))+
+  theme_bw()+
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.text = element_text(size=11,face = "bold"),
+        legend.position = "none",
+        plot.title.position = "plot",
+        title = element_text(size=15)
+        )+
+  labs(x=NULL,
+       y=NULL,
+       title="Distribucion de Ventas por Sociedad",
+       subtitle="Intervalo de Tiempo: Mar 2020 a Dic 2021")
+
+vts_auto$periodo_facturacion <- format(vts_auto$fecha_facturacion,"%Y%m")
+
+# Historico de Ventas por Sociedad
+
+historico_ventas_sociedad <- vts_auto %>% 
+  filter(fecha_facturacion>="2020-03-01",
+         fecha_facturacion<"2022-01-01",) %>% 
+  count(periodo_facturacion,flag_derco) %>% 
+  group_by(periodo_facturacion) %>% 
+  mutate(pct=n/sum(n)) %>% 
+  ungroup() 
+
+
+percent_mod <- function(x)formattable::percent(x,digits = 0)
+
+historico_ventas_sociedad %>% 
+  ggplot(aes(x=periodo_facturacion,
+             y=pct,
+             color=flag_derco,
+             group=flag_derco,
+             label=percent_mod(pct)))+
+  # geom_line(stat="identity")+
+  geom_line(size=2)+
+  geom_point(size=2.5)+
+  geom_label(data = historico_ventas_sociedad %>% filter(flag_derco=="Concesionario",pct>0.68),nudge_y = 0.02 )+
+  geom_vline(xintercept = "202102",size=1.5,linetype="dashed")+
+  geom_vline(xintercept = "202106",size=1.5,linetype="dashed")+
+  scale_y_continuous(labels = scales::percent)+
+  scale_color_manual(values=c("#1F78B4","#E31A1C"))+
+  theme_classic()+
+  theme(axis.text.x = element_text(angle = 90,size=11),
+        axis.text.y = element_text(size=11),
+        plot.subtitle = element_text(size=13),
+        # plot.title = element_text(size=15),
+        legend.position = "none",
+        plot.title = element_markdown(size = 15))+
+  labs(x="Periodo de Facturacion",
+       y=NULL,
+       subtitle="Intervalo de Tiempo: Mar 2020 a Dic 2021",
+       title = "Historico del Impacto de Ventas entre <span style = 'color: #1F78B4;'>Concesionario</span> vs <span style = 'color: #E31A1C;'>Dercocenter</span>")
+
+
+# vts_dc_2020 <- vts_auto %>%
+#   filter(fecha_facturacion>="2020-03-01",
+#          sociedad == "Dercocenter")
+
+vts_auto_2021 <- vts_auto %>% 
+  filter(fecha_facturacion >= "2021-01-01",
+         fecha_facturacion < "2022-01-01")
+
+vts_auto_2021$fecha_facturacion %>% summary
+
+# Insercion del año Modelo del vehiculo
+vts_auto_2021 <- vts_auto_2021 %>% left_join(anio_modelo,by = "vin") %>% 
+  rename(anio_modelo=año_modelo)
+# 41  de 28538 no tienen año modelo
+
+vts_auto_2021 %>% crosstab(anio_modelo)
+
+# Seleccion de años modelos 2021 y 2022
+
+vts_auto_2021 %<>% filter(anio_modelo %in% c("2021", "2022"))
+
+# vts_dc_2020 %<>% distinct
+# 
+# vts_dc_2020$id <- vts_dc_2020 %$% paste0(fecha_facturacion,"_",vin)
+# 
+# # Validacion de unico registro por vin y fecha de facturacion
+# count_id <- vts_dc_2020 %>% crosstab(id)
+# (count_id$n %>% unique) == 1
+# 
+# #### Base Ventas Derco Center Maestra
+# 
+# ventas_dc_maestra %>% glimpse
+# 
+# ventas_dc_maestra$fecha_facturacion %<>% ymd
+# ventas_dc_maestra$cantidad_unidades %<>% as.numeric
+# ventas_dc_maestra$id <- ventas_dc_maestra %$% paste0(fecha_facturacion,"_",vin)
+# 
+# 
+# ventas_dc_maestra_2020 <- ventas_dc_maestra %>%
+#   filter(fecha_facturacion>="2020-03-01")
+# 
+# ventas_dc_maestra_2020 <- ventas_dc_maestra_2020 %>% 
+#   select(id,fecha_facturacion,vin,numero_documento,factura_sap,cantidad_unidades)
+# 
+# 
+# ventas_dc_maestra_2020 %<>% distinct
+# 
+# suma_unidades_vin_fec <- ventas_dc_maestra_2020 %>% 
+#   group_by(id) %>% 
+#   summarise(sum_cant_unidades = sum(cantidad_unidades)) %>% 
+#   ungroup()
+# 
+# 
+# 
+# 
+# suma_unidades_vin_fec
+# 
+# suma_unidades_vin_fec$sum_cant_unidades %>% table
+# # SI suma 0 total en la columna cantidad_unidades -> No es venta.
+# # Si suma 1 total es venta.
+# # Si suma -1, jurier
+# 
+# # 1) Este id 2020-06-24_LGWEE2K50LE608658 fue entregado y su suma es 0 
+# suma_unidades_vin_fec %>% 
+#   filter(id=="2020-06-24_LGWEE2K50LE608658")
+# 
+# 
+# ventas_dc_maestra %>% 
+#   filter(id=="2020-06-24_LGWEE2K50LE608658")
+# 
+# ventas_dc_maestra %>% 
+#   filter(vin=="LGWEE2K50LE608658")
+# 
+# vts_dc_2020 %>% 
+#   filter(id=="2020-06-24_LGWEE2K50LE608658")
+# 
+# 
+# # Seleccionando la factura con mayor valor para obtener la factura real
+# 
+# # ventas_dc_maestra_2020 %<>%
+# #   # filter(id %in% c("2021-05-19_LJ11PABD2NC081252","2021-12-09_LGWDBF195NJ615776")) %>%
+# #   group_by(id) %>%
+# #   arrange(desc(factura_sap)) %>%
+# #   slice(1)
+# 
+# # Seleccionando todos los 1 y escogiendo la mas reciente factura sap
+# ventas_dc_maestra_2020 %<>%
+#   filter(cantidad_unidades==1) %>%
+#   group_by(id) %>%
+#   arrange(desc(factura_sap)) %>%
+#   slice(1) %>% 
+#   ungroup()
+# 
+# vts_dc_2020$numero_documento %>% str_length %>% table
+# ventas_dc_maestra_2020$numero_documento %>% str_length %>% table
+# 
+# 
+# vts_dc_2020 <- vts_dc_2020 %>% 
+#   left_join(ventas_dc_maestra_2020 %>% select(-id,-cantidad_unidades),
+#             by=c("fecha_facturacion","vin","numero_documento"))
+
+### Base Precios
+
+# names(precios) %<>% normVarNames()
+# precios$factura_sap %<>% as.character()
+# precios$sum_valor_neto <- NULL
+# precios %<>% rename(importe_total_dol = importe_total)
+# # Variable factura sap
+# vts_dc_2020 %>% glimpse
+# 
+# 
+# vts_dc_2020$factura_sap %<>% as.character()
+# 
+# vts_dc_2020 <- vts_dc_2020 %>% left_join(precios,by="factura_sap")
+# 
+# vts_dc_2020 %<>% filter(!is.na(importe_total_dol))
+# 
+# vts_dc_2020$importe_total_dol %<>% round()
+
+vts_auto_2021$marca %<>% str_trim()
+
+vts_auto_2021 %<>%
+  mutate(
+    modelo = case_when(
+      modelo == "GRAND_S3_GAS" ~ "GRAND S3_GAS",
+      modelo == "H2_HAVAL_GAS" ~ "H2 HAVAL_GAS",
+      modelo == "H6_HAVAL_GAS" ~ "H6 HAVAL_GAS",
+      modelo == "HAVAL_H2_GAS" ~ "HAVAL H2_GAS",
+      modelo == "LOGAN_SEDAN_GAS" ~ "LOGAN SEDAN_GAS",
+      modelo == "S_CROSS_GAS" ~ "S-CROSS_GAS",
+      modelo == "S_PRESSO" ~ "S-PRESSO",
+      modelo == "S_PRESSO_GAS" ~ "S-PRESSO_GAS",
+      modelo == "VOLEEX_C30_GAS" ~ "VOLEEX C30_GAS",
+      TRUE ~ modelo
+    )
+  )
+
+
+modelo_comb <- vts_auto_2021$modelo  %>% 
+  str_split(pattern = "_",n = 2,simplify = T) %>% 
+  as.data.frame %>% 
+  rename(modelo=V1,
+         tipo_comb=V2) %>% 
+  mutate(tipo_comb=ifelse(tipo_comb!="GAS","NO GAS",tipo_comb))
+
+vts_auto_2021$modelo <- NULL
+
+vts_auto_2021 <- vts_auto_2021 %>% bind_cols(modelo_comb)
+
+vts_auto_2021 %>% glimpse
+
+# vts_auto_2021 %>% 
+#   filter(tipo_comb=="GAS") %>% 
+#   select(version)
+# 
+# vts_auto_2021 %>% 
+#   filter(marca=="GREAT WALL",modelo=="M4") %>% 
+#   select(marca,modelo,version,tipo_comb) %>% 
+#   distinct() %>% 
+#   arrange(version)
+
+
+vts_auto_2021 %>% 
+  filter(marca=="GREAT WALL",modelo=="M4",
+         # tipo_comb=="GAS",version=="NEW M4  4X2 LUXURY 1.5") %>%
+         tipo_comb=="GAS",version=="NEW M4  4X2 LUXURY 1.5 GLPT") %>%
+  select(marca,modelo,version,tipo_comb,vin,fecha_facturacion) %>% 
+  distinct() %>% 
+  arrange(version) %>% head
+
+# vin: LGWED2A34ME601989 - GLP
+# vin: LGWED2A38ME601977 - GLP
+# vin: LGWED2A32LE610236 - GLP
+
+```
+
+
+```{r marca-JAC}
+vts_auto_2021 %>%
+# vts_auto %>% 
+  filter(fecha_facturacion>="2021-01-01") %>% 
+  filter(marca=="JAC") %>% 
+  crosstab(modelo)
+
+vts_auto_2021 %<>% 
+  mutate(modelo = case_when(
+    marca == "JAC" & modelo == "#" & str_detect(version, "T6") ~ "T6" ,
+    marca == "JAC" & modelo == "#" & str_detect(version, "REFINE") ~ "REFINE" ,
+    marca == "JAC" & modelo == "#" & str_detect(version, "JS4") ~ "JS4" ,
+    marca == "JAC" & modelo == "#" & str_detect(version, "S2") ~ "S2" ,
+    TRUE ~ modelo
+  )) 
+# EL Modelo S2 Y JS2 de JAC son lo mismo?
+  
+
+```
+
+
+```{r marca-CHANGAN}
+
+vts_auto_2021 %>%
+# vts_auto %>% 
+  filter(fecha_facturacion>="2021-01-01") %>% 
+  filter(marca=="CHANGAN") %>% 
+  crosstab(modelo)
+
+vts_auto_2021 %>%
+# vts_auto %>% 
+  filter(fecha_facturacion>="2021-01-01") %>% 
+  filter(marca=="CHANGAN") %>% 
+  filter(modelo=="#") %>% 
+  crosstab(version) %>% 
+  pull(version)
+
+vts_auto_2021 %>% 
+  # filter(version=="GRAND NEW SUPERVAN 1.5L 11 SEATS") %>% 
+  # filter(version=="GRAND VAN TURISMO 1.5L 11 PASAJEROS") %>% 
+  # filter(version=="GRAND NEW SUPERVAN 1.5L 11SEATS AC") %>% 
+  filter(version=="NEW VAN CON AC") %>%
+  crosstab(modelo)
+
+
+vts_auto_2021 %<>% 
+  mutate(modelo = case_when(
+    marca == "CHANGAN" & modelo == "#" & str_detect(version, "HONOR") ~ "HONOR" ,
+    marca == "CHANGAN" & modelo == "#" & str_detect(version, "VAN") ~ "VAN" ,
+    TRUE ~ modelo
+  )) 
+# EL Modelo S2 Y JS2 de JAC son lo mismo?
+
+```
+
+```{r marca-MAZDA}
+
+vts_auto_2021 %>%
+# vts_auto %>% 
+  filter(marca=="MAZDA") %>% 
+  crosstab(modelo)
+
+vts_auto_2021 %>%
+# vts_auto %>% 
+  filter(marca=="MAZDA") %>% 
+  filter(modelo=="#") %>%
+  crosstab(version) %>% 
+  pull(version)
+
+vts_auto_2021 %>% 
+  filter(version=="BT50 MT 3.2 4X4 D2 HIGH IPM PE") %>%
+  crosstab(modelo)
+
+
+vts_auto_2021 %<>% 
+  mutate(modelo = case_when(
+    marca == "MAZDA" & modelo == "#" & str_detect(version, "BT50") ~ "BT50" ,
+    marca == "MAZDA" & modelo == "#" & str_detect(version, "CX3") ~ "CX3" ,
+    TRUE ~ modelo
+  ))
+
+```
+
+```{r marca-SUZUKI}
+
+vts_auto_2021 %>%
+# vts_auto %>% 
+  filter(marca=="SUZUKI") %>% 
+  crosstab(modelo) %>% 
+  as.data.frame
+
+vts_auto_2021 %>%
+# vts_auto %>% 
+  filter(marca=="SUZUKI") %>% 
+  filter(modelo=="#") %>%
+  crosstab(version) %>% 
+  pull(version)
+
+vts_auto_2021 %>% 
+  filter(version=="APV FURGON") %>%
+  crosstab(modelo)
+
+
+vts_auto_2021 %<>% 
+  mutate(modelo = case_when(
+    marca == "SUZUKI" & modelo == "#" & str_detect(version, "APV") ~ "APV" ,
+    marca == "SUZUKI" & modelo == "#" & str_detect(version, "S-CROSS") ~ "S-CROSS" ,
+    marca == "SUZUKI" & modelo == "#" & str_detect(version, "ALTO") ~ "ALTO" ,
+    TRUE ~ modelo
+  ))
+
+
+```
+
+```{r marca-HAVAL}
+
+vts_auto_2021 %>%
+# vts_auto %>% 
+  filter(marca=="HAVAL") %>% 
+  crosstab(modelo) %>% 
+  as.data.frame
+
+vts_auto_2021 %>%
+# vts_auto %>% 
+  filter(marca=="HAVAL") %>% 
+  filter(modelo=="#") %>%
+  crosstab(version) %>% 
+  pull(version)
+# No se sabe si la version es H6 HAVAL, HAVAL H6, H6
+
+
+
+```
+
+```{r marca-RENAULT}
+
+vts_auto_2021 %>%
+# vts_auto %>% 
+  filter(marca=="RENAULT") %>% 
+  crosstab(modelo) %>% 
+  as.data.frame
+
+vts_auto_2021 %>%
+# vts_auto %>% 
+  filter(marca=="RENAULT") %>% 
+  filter(modelo=="#") %>%
+  crosstab(version) %>% 
+  pull(version)
+
+vts_auto_2021 %<>% 
+  mutate(modelo = case_when(
+    marca == "RENAULT" & modelo == "#" & str_detect(version, "OROCH") ~ "OROCH" ,
+    TRUE ~ modelo
+  ))
+
+```
+
+
+```{r marca-CITROEN}
+
+vts_auto_2021 %>%
+# vts_auto %>% 
+  filter(marca=="CITROEN") %>% 
+  crosstab(modelo) %>% 
+  as.data.frame
+
+vts_auto_2021 %>%
+# vts_auto %>% 
+  filter(marca=="CITROEN") %>% 
+  filter(modelo=="#") %>%
+  crosstab(version) %>% 
+  pull(version)
+
+vts_auto_2021 %<>% 
+  mutate(modelo = case_when(
+    marca == "CITROEN" & modelo == "#" & str_detect(version, "F3  CACTUS") ~ "F3  CACTUS" ,
+    marca == "CITROEN" & modelo == "#" & str_detect(version, "C4 CACTUS") ~ "C4 CACTUS" ,
+    TRUE ~ modelo
+  ))
+
+
+```
+
+
+```{r Sell-in-2022}
+
+sellin_2022 <- read_excel("01.Data/Analisis Sell in 2022- Ventas Sell Out 2021 - Seleccion versiones.xlsx",range = "R4:X183")
+sellin_2022 %>% glimpse
+
+sellin_2022$Marca %>% unique
+sellin_2022$Modelo %>% unique
+sellin_2022$Selecto %>% unique
+
+sellin_2022 %<>% filter(Selecto=="SI")
+
+versiones_2022 <- sellin_2022$Version
+
+versiones_2022 %>% length
+
+vts_auto_2021_selected <- vts_auto_2021 %>% 
+  filter(version %in% versiones_2022 ) 
+
+vts_auto_2021_selected$version %>% unique %>% length
+
+vts_auto_2021_selected %>% 
+  filter(marca=="JAC",modelo=="JS2") %>% 
+  count(version,tipo_comb) %>% 
+  arrange(desc(n))
+
+```
+
+```{r Precios-sap}
+
+precios_sap <- read_excel("01.Data/Lista_precios_2021/Ajustado/Lista de Precios 2021.xlsx")
+
+# Formateo de Nombre de Variables
+names(precios_sap) %<>% str_to_lower()
+precios_sap %<>% rename(anio_modelo=año_modelo)
+
+# Formateo de variable año modelo
+precios_sap$anio_modelo %<>% as.character
+
+# Eliminacion de Variables redundantes
+precios_sap$marca <- NULL
+precios_sap$modelo <- NULL
+precios_sap$combustible <- NULL
+
+# Distribucion de Precios
+precios_sap$precio_sap %>% quantile(probs=seq(0,1,.05),na.rm=T)
+
+# Retirando aquellos que no tienen precio
+precios_sap <- precios_sap %>% filter(precio_sap>0)
+
+# Join con las ventas por version y anio modelo
+
+precios_sap$version %<>% str_to_upper()
+vts_auto_2021_selected$version %<>% str_to_upper()
+
+precios_sap$mes %>% unique %>% as.data.frame
+
+vts_auto_2021_selected$periodo_facturacion %>% unique %>% sort
+
+# prueba <- vts_auto_2021_selected %>%
+#   filter(periodo_facturacion=="202101") %>%
+#   left_join(precios_sap %>% filter(mes=="Enero"),by=c("version","anio_modelo"))
+# 
+# prueba %>% glimpse
+# 
+# prueba %>% 
+#   filter(is.na(precio_sap)) %>% 
+#   crosstab(marca)
+#   distinct(marca,modelo,version,anio_modelo,fecha_facturacion) %>% 
+#   head(30)
+
+
+vts_auto_2021_selected <- bind_rows(vts_auto_2021_selected %>% filter(periodo_facturacion == "202101") %>%
+            left_join(precios_sap %>% filter(mes == "Enero"),by = c("version", "anio_modelo")),
+            
+          vts_auto_2021_selected %>% filter(periodo_facturacion == "202102") %>%
+            left_join(precios_sap %>% filter(mes == "Febrero"),by = c("version", "anio_modelo")),
+          
+          vts_auto_2021_selected %>% filter(periodo_facturacion=="202103") %>%
+            left_join(precios_sap %>% filter(mes=="Marzo"),by=c("version","anio_modelo")),
+          
+          vts_auto_2021_selected %>% filter(periodo_facturacion=="202104") %>%
+            left_join(precios_sap %>% filter(mes=="Abril"),by=c("version","anio_modelo")),
+          
+          vts_auto_2021_selected %>% filter(fecha_facturacion>="2021-05-01",fecha_facturacion<="2021-05-08") %>%
+            left_join(precios_sap %>% filter(mes=="1_8 Mayo"),by=c("version","anio_modelo")),
+          
+          vts_auto_2021_selected %>% filter(fecha_facturacion>="2021-05-09",fecha_facturacion<"2021-06-01") %>%
+            left_join(precios_sap %>% filter(mes=="9_31 Mayo"),by=c("version","anio_modelo")),
+          
+          vts_auto_2021_selected %>% filter(periodo_facturacion=="202106") %>%
+            left_join(precios_sap %>% filter(mes=="Junio"),by=c("version","anio_modelo")),
+          
+          vts_auto_2021_selected %>% filter(fecha_facturacion>="2021-07-01",fecha_facturacion<="2021-07-13") %>%
+            left_join(precios_sap %>% filter(mes=="01_13 Julio"),by=c("version","anio_modelo")),
+          
+          vts_auto_2021_selected %>% filter(fecha_facturacion>="2021-07-14",fecha_facturacion<"2021-08-01") %>%
+            left_join(precios_sap %>% filter(mes=="14_31 Julio"),by=c("version","anio_modelo")),
+          
+          vts_auto_2021_selected %>% filter(periodo_facturacion=="202108") %>%
+            left_join(precios_sap %>% filter(mes=="Agosto"),by=c("version","anio_modelo")),
+          
+          vts_auto_2021_selected %>% filter(fecha_facturacion>="2021-09-01",fecha_facturacion<="2021-09-15") %>%
+            left_join(precios_sap %>% filter(mes=="01_15 Set"),by=c("version","anio_modelo")),
+          
+          vts_auto_2021_selected %>% filter(fecha_facturacion>="2021-09-16",fecha_facturacion<"2021-10-01") %>%
+            left_join(precios_sap %>% filter(mes=="16_30 Set"),by=c("version","anio_modelo")),
+          
+          vts_auto_2021_selected %>% filter(fecha_facturacion>="2021-10-01",fecha_facturacion<="2021-10-17") %>%
+            left_join(precios_sap %>% filter(mes=="01_17 Oct"),by=c("version","anio_modelo")),
+          
+          vts_auto_2021_selected %>% filter(fecha_facturacion>="2021-10-18",fecha_facturacion<"2021-11-01") %>%
+            left_join(precios_sap %>% filter(mes=="18_31 Oct"),by=c("version","anio_modelo")),
+          
+          vts_auto_2021_selected %>% filter(fecha_facturacion>="2021-11-01",fecha_facturacion<="2021-11-11") %>%
+            left_join(precios_sap %>% filter(mes=="01_11 Nov"),by=c("version","anio_modelo")),
+          
+          vts_auto_2021_selected %>% filter(fecha_facturacion>="2021-11-12",fecha_facturacion<"2021-12-01") %>%
+            left_join(precios_sap %>% filter(mes=="12_30 Nov"),by=c("version","anio_modelo")),
+          
+          vts_auto_2021_selected %>% filter(fecha_facturacion>="2021-12-01",fecha_facturacion<="2021-12-31") %>%
+            left_join(precios_sap %>% filter(mes=="Dic"),by=c("version","anio_modelo"))
+          )
+
+
+# En que marcas se congrega el missing
+
+
+# Distribucion de missing
+vts_auto_2021_selected %>% 
+  mutate(missing_precio = is.na(precio_sap)) %>% 
+  crosstab(missing_precio)
+
+
+# Retirando el missing de precios
+
+vts_auto_2021_selected %<>% filter(!is.na(precio_sap))
+
+```
+
+
+
+```{r auto-1}
+
+# auto_1 <- vts_auto_2021_selected %>% 
+#   filter(marca=="JAC",modelo=="JS2") %>% 
+#   filter(version=="JS2 1.5 MT COMFORT")
+# 
+# 
+# # scl: Es la division entre el maximo de las variables a comparar
+# scl = 912
+# 
+# auto_1_summary <- auto_1 %>% 
+#   mutate(periodo_facturacion=format(fecha_facturacion,"%Y%m")) %>% 
+#   group_by(periodo_facturacion) %>% 
+#   summarise(ventas=n(),
+#             precio_promedio=mean(precio_sap),
+#             precio_cv=sd(precio_sap)/mean(precio_sap)) %>% 
+#   ungroup() %>% 
+#   mutate(fecha_facturacion = ymd(paste0(periodo_facturacion,"01") ) ) %>% 
+#   mutate(precio_cv = percent(precio_cv)  ) %>% 
+#   filter(fecha_facturacion<"2021-12-01")
+# 
+# auto_1_summary
+# 
+# auto_1_summary %>% 
+#   ggplot(aes(x=fecha_facturacion))+
+#   geom_line(aes(y=precio_promedio))+
+#   geom_line(aes(y=ventas*scl))+
+#   scale_y_continuous(sec.axis = sec_axis(~./scl,name="Ventas"))
+#   
+# auto_1_summary %>% 
+#   ggplot(aes(x=precio_promedio,y=ventas))+
+#   geom_point()
+# require(scales)
+# 
+# auto_1_summary %>% 
+#   ggplot(aes(x=precio_promedio,y=ventas))+
+#   geom_point()+
+#   scale_x_log10()+
+#   geom_smooth()+
+#   theme_classic()
+
+```
+
+```{r auto-2}
+
+auto_2 <- vts_auto_2021_selected %>% 
+  filter(marca=="CHANGAN",modelo=="CS35") %>% 
+  filter(version=="CS35 PLUS 1.6 MT LUXURY")
+
+
+
+# scl: Es la division entre el maximo de las variables a comparar
+
+
+auto_2_summary <- auto_2 %>% 
+  mutate(periodo_facturacion=format(fecha_facturacion,"%Y%m")) %>% 
+  group_by(periodo_facturacion) %>% 
+  summarise(ventas=n(),
+            precio_promedio=mean(precio_sap),
+            precio_cv=sd(precio_sap)/mean(precio_sap)) %>% 
+  ungroup() %>% 
+  mutate(fecha_facturacion = ymd(paste0(periodo_facturacion,"01") ) ) %>% 
+  mutate(precio_cv = percent(precio_cv)  ) %>% 
+  filter(fecha_facturacion<"2021-12-01")
+
+auto_2_summary %>% 
+  summary
+
+scl = 15990/14
+
+auto_2_summary %>% 
+  ggplot(aes(x=fecha_facturacion))+
+  geom_line(aes(y=precio_promedio))+
+  geom_line(aes(y=ventas*scl))+
+  scale_y_continuous(sec.axis = sec_axis(~./scl,name="Ventas"))
+  
+auto_2_summary %>% 
+  ggplot(aes(x=precio_promedio,y=ventas))+
+  geom_point()
+
+auto_2_summary %>% 
+  ggplot(aes(x=precio_promedio,y=ventas))+
+  geom_point()+
+  scale_x_log10()+
+  geom_smooth()+
+  theme_classic()
+
+auto_2_summary %$% cor(ventas,precio_promedio) 
+
+```
+
+```{r auto-3}
+
+auto_3 <- vts_dc_2020_selected %>% 
+  filter(marca=="MAZDA",modelo=="CX-5") %>% 
+  filter(version=="CX-5 CORE 2.0 AT 2WD IPM IV")
+
+# scl: Es la division entre el maximo de las variables a comparar
+
+auto_3_summary <- auto_3 %>% 
+  mutate(periodo_facturacion=format(fecha_facturacion,"%Y%m")) %>% 
+  group_by(periodo_facturacion) %>% 
+  summarise(ventas=n(),
+            precio_promedio=mean(precio_sap),
+            precio_cv=sd(precio_sap)/mean(precio_sap)) %>% 
+  ungroup() %>% 
+  mutate(fecha_facturacion = ymd(paste0(periodo_facturacion,"01") ) ) %>% 
+  mutate(precio_cv = percent(precio_cv)  ) %>% 
+  filter(fecha_facturacion<"2021-12-01")
+
+auto_3_summary %>% 
+  summary
+
+scl = 29658/12
+
+auto_3_summary %>% 
+  ggplot(aes(x=fecha_facturacion))+
+  geom_line(aes(y=precio_promedio))+
+  geom_line(aes(y=ventas*scl))+
+  scale_y_continuous(sec.axis = sec_axis(~./scl,name="Ventas"))
+  
+auto_3_summary %>% 
+  ggplot(aes(x=precio_promedio,y=ventas))+
+  geom_smooth()+
+  geom_point()
+
+auto_3_summary %>% 
+  ggplot(aes(x=precio_promedio,y=ventas))+
+  geom_point()+
+  scale_x_log10()+
+  geom_smooth()+
+  theme_classic()
+
+auto_3_summary %$% cor(ventas,precio_promedio) 
+
+```
+
+```{r all-autos}
+
+mmva_2021 <- vts_auto_2021_selected %>% 
+  group_by(marca,modelo,version,anio_modelo) %>% 
+  nest()
+
+mmva_2021 %<>% 
+  mutate(ventas_totales=map_dbl(data,nrow)) %>% 
+  arrange(desc(ventas_totales))
+
+mmva_2021 <- mmva_2021 %>% 
+  mutate(elasticidad_df = map(data, function(x) x %>% 
+                          mutate(periodo_facturacion = format(fecha_facturacion,"%Y%m") ) %>% 
+                          group_by(periodo_facturacion) %>% 
+                          summarise(ventas=n(),
+                                    precio_promedio=mean(precio_sap),
+                                    precio_cv=sd(precio_sap)/mean(precio_sap)) %>% 
+                          ungroup() %>% 
+                          mutate(fecha_facturacion = ymd(paste0(periodo_facturacion,"01") ) ) %>% 
+                          mutate(precio_cv = percent(precio_cv)  ) %>% 
+                          filter(ventas>=3)
+                          ),
+         n_periodos = map_dbl(elasticidad_df,nrow)) 
+
+mmva_2021 %<>% 
+  mutate(cor=map_dbl(elasticidad_df,function(x) cor(x$ventas,x$precio_promedio) ))
+
+mmva_2021 %<>% 
+  mutate(ventas_periodo = ventas_totales/n_periodos)
+
+mmva_2021 %<>% 
+  mutate(flag_10 = ifelse(n_periodos>=10,"Si","No"))
+
+
+```
+
+
+```{r all-autos-matriz-ventas-correlacion}
+
+require(ggthemes)
+
+mmva_2021$n_periodos %>% summary
+
+mmva_2021 %>% 
+  ggplot(aes(x=cor,y=ventas_periodo,shape=flag_10,color=flag_10))+
+  geom_point(size=5)+
+  geom_vline(xintercept = 0,linetype="dashed",color="gray50",size=1.5)+
+  ylim(0,15)+
+  theme_bw()+
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.text = element_text(size=15),
+        axis.title = element_text(size=15),
+        title = element_text(size=18),
+        plot.title.position = "plot",
+        legend.position = "bottom")+
+  labs(x="NIVEL DE CORRELACION",
+       y="FRECUENCIA DE VENTAS/MES",
+       color="Participacion >= 10 Meses",
+       shape="Participacion >= 10 Meses",
+       title = "Relacion de Correlacion(Precio & Ventas) vs Frecuencia de Ventas/Mes")
+
+```
+
+
+```{r all-autos-correlacion}
+# Correlacion Positiva
+
+mmva_2021 %>% 
+  # filter(cor>0.8) %>% 
+  arrange(desc(cor)) %>% 
+  head(4) %>% 
+  unnest(elasticidad_df) %>% 
+  ggplot(aes(x=precio_promedio,y=ventas))+
+  geom_point(color="gray50",size=5)+
+  geom_line(color="steelblue3",size=2)+
+  # scale_y_continuous(breaks=seq(3,9),labels=seq(3,9))+
+  scale_x_continuous(labels = scales::label_number(suffix = "k", scale = 1e-3, decimal.mark =  ".",accuracy = .1))+
+  facet_wrap(~version,nrow = 2,scales = "free")+
+  theme_bw()+
+  theme(strip.text = element_text(face = "bold",color="white"),
+        strip.background = element_rect(fill="#1B9E77"),
+        axis.text = element_text(size=10))+
+  labs(y="VENTAS",x="PRECIO PROMEDIO")
+
+# Correlacion Negativa
+mmva_2021 %>% 
+  arrange(cor) %>% 
+  head(4) %>% 
+  unnest(elasticidad_df) %>% 
+  ggplot(aes(x=precio_promedio,y=ventas))+
+  geom_point(color="gray50",size=5)+
+  geom_line(color="steelblue3",size=2)+
+  # scale_y_continuous(breaks=seq(3,9),labels=seq(3,9))+
+  # scale_x_continuous(labels = comma)+
+  scale_x_continuous(labels = scales::label_number(suffix = "k", scale = 1e-3, decimal.mark =  ".",accuracy = .1))+
+  facet_wrap(~version,nrow = 2,scales = "free")+
+  theme_bw()+
+  theme(strip.text = element_text(face = "bold",color="white"),
+        strip.background = element_rect(fill="#1B9E77"),
+        axis.text = element_text(size=10))+
+  labs(y="VENTAS",x="PRECIO PROMEDIO")
+
+mmv_2021 %>% 
+  filter(cor<0,flag_12=="Si") %>% 
+  unnest(elasticidad_df) %>% 
+  filter(ventas>=5) %>% 
+  ggplot(aes(x=precio_promedio,y=ventas))+
+  geom_point()+
+  geom_line()+
+  geom_smooth()+
+  facet_wrap(~version,nrow = 2,scales = "free")
+
+mmv_2021 %>% 
+  filter(cor>0,flag_12=="Si") %>% 
+  unnest(elasticidad_df) %>% 
+  filter(ventas>=5) %>% 
+  ggplot(aes(x=precio_promedio,y=ventas))+
+  geom_point()+
+  geom_line()+
+  geom_smooth()+
+  facet_wrap(~version,nrow = 2,scales = "free")+
+  theme_bw()
+  
+
+mmv_2021$flag_12 %>% unique
+  
+
+```
+
+
+```{r model}
+
+# https://www.pricing.cl/conocimiento/elasticidad-precio-de-la-demanda/
+# https://www.claseejecutiva.uc.cl/blog/articulos/como-calcular-la-elasticidad-de-la-demanda/
+
+
+mmv_2021 %>% 
+  filter(n_periodos>=12) %>% 
+  select(ventas_totales,n_periodos,cor)
+
+mmv_2021$elasticidad_df[[1]] %>% 
+  ggplot(aes(x=precio_promedio,y=ventas))+
+  geom_point()+
+  geom_line()+
+  geom_smooth()
+
+
+df <- mmv_2021$elasticidad[[1]]
+
+# df <- data.frame(ventas = c(10L, 9L),precio_promedio = c(100L, 120L)) # Elasticidad -0.5
+df <- data.frame(ventas = c(20L, 12L),precio_promedio = c(100L, 120L)) # Elasticidad -2
+
+rlm_6 <- lm(ventas ~ precio_promedio, data = df)
+# rlm_6 <- rlm(log(ventas) ~ log(precio_promedio), data = df)
+# rlm_6 <- rlm(log(ventas) ~ log(precio_promedio), data = df,psi = psi.bisquare)
+
+summary(rlm_6)
+# summary(rlm_6)$r.squared
+# rlm_6$coefficients[2]
+
+
+# RLM
+# 3 : Elasticidad: -5
+# 4 : Elasticidad: -3
+# 6 : Elasticidad  3
+require(MASS)
+
+mmv_2021 <- mmv_2021 %>% 
+  filter(n_periodos>=12) %>% 
+  # select(elasticidad) %>% 
+  mutate(lm_model = map(elasticidad_df,function(x) lm(ventas ~ precio_promedio,data = x)) ) %>% 
+  mutate(pendiente_lm = map_dbl(lm_model,function(x) x$coefficients[2] ) ) %>% 
+  mutate(elasticidad_model = map(elasticidad_df,function(x)  rlm(log(ventas) ~ log(precio_promedio), data = x) ) ) %>% 
+  mutate(elasticidad = map_dbl(elasticidad_model,function(x) x$coefficients[2] ))
+mmv_2021
+
+
+prueba <- mmv_2021 %>% 
+  mutate(r2 = map_dbl(lm_model,function(x) summary(x)$r.squared ))
+
+prueba %>% 
+  select(r2)
+mmv_2021$rlm_model[[1]]
+summary(rlm_6)$r.squared
+# Graficas de vehiculos precio demanda
+# Que vehiculos tienen elasiticidad  y que no.
+# Tomar ventaja de las elasticidad ver que vehiculos son sensibles y que no.
+
+
+rlm_6$coefficients[2]
+prueba$rlm_model[[1]]
+
+mmv_2021 %>% 
+  filter(marca=="CHANGAN",
+         version=="CS35 PLUS 1.4T AT LIMITED") %>% 
+  pull(elasticidad)
+
+```
+
+
+
+
+Base Stock
+
+```{r stock}
+
+stock <- read_excel("01.Data/Perú - Stocks proyección Diciembre21.xlsx",
+                    sheet = "Hoja1",range = "B3:E72")
+
+names(stock) %<>% normVarNames()
+
+stock$marca %<>% str_to_upper()
+stock$modelo %<>% str_to_upper()
+stock %<>% rename(proy_venta_2022= suma_de_venta_22)
+
+
+stock %<>% 
+  mutate(modelo = case_when(modelo=="S2" ~ "JS2",
+                            modelo=="S4" ~ "JS4",
+                            modelo=="TOTAL NEW VITARA" ~ "VITARA",
+                            modelo=="HAVAL JOLION" ~ "JOLION",
+                            modelo=="NEW DUSTER" ~ "DUSTER",
+                            modelo=="CX-30" ~ "CX30",
+                            modelo=="XL-7" ~ "XL7",
+                            modelo=="NEW JIMNY MSIL" ~ "JIMNY",
+                            modelo=="C4 MERCOSUR" ~ "C4 CACTUS",
+                            modelo=="TOTAL S-CROSS" ~ "S-CROSS",
+                            modelo=="HAVAL H6 COUPE" ~ "ALL NEW H6 HAVAL",
+                            TRUE ~ modelo) )
+
+stock_ventas <- stock %>% 
+  left_join(ventas_2021,by = c("marca"="marca_venta","modelo"="modelo_venta") ) %>% 
+  arrange(desc(proy_venta_2022))
+
+
+stock_ventas_completed_suv <- stock_ventas %>% 
+  filter(!is.na(ventas_2021)) %>% 
+  filter(seg=="SUV")
+
+
+require(ggthemes)
+stock_ventas_completed_suv %>% 
+  ggplot(aes(x=ventas_2021,y=proy_venta_2022,color=marca))+
+  geom_point(size=3,alpha=0.8)+
+  geom_abline(intercept = 0, slope = 1,size=1.3,linetype="dashed")+
+  geom_label_repel(data = stock_ventas_completed_suv %>% head(8),
+             aes(label=paste0(marca,"-",modelo)),size=4,hjust=0.5,vjust=0.5)+
+  theme_clean()+
+  scale_x_continuous(breaks=c(0,200,500,1000),labels = c(0,200,500,1000))+
+  scale_y_continuous(breaks=c(0,500,1000,1500),labels = c(0,500,1000,1500))+
+  theme(axis.text = element_text(size=15),
+        axis.title=element_text(size=15),
+        legend.position = "none") +
+  labs(x=" Ventas Sellout 2021",y="Proy. Ventas Sellin 2022")
+
+
+stock_ventas_completed_suv %>% 
+  write.csv("01.Data/ventas_mm_&_stock.csv")
+
+
+
+ventas_2021_mmv <- ventas %>% 
+  filter(anio_facturacion=="2021") %>% 
+  group_by(marca_venta,modelo_venta,version_venta) %>% 
+  summarise(n=n()) %>% 
+  rename(ventas_2021=n) %>% 
+  ungroup() %>% 
+  inner_join(stock_ventas_completed_suv %>% select(seg,modelo,marca),
+             by = c("marca_venta"="marca","modelo_venta"="modelo") )
+
+
+prueba <- ventas_2021_mmv %>% 
+  select(seg,marca_venta,modelo_venta,version_venta,ventas_2021) %>% 
+  group_by(marca_venta,modelo_venta) %>% 
+  mutate(pct_ventas_2021=ventas_2021/sum(ventas_2021)) %>% 
+  arrange(desc(pct_ventas_2021)) 
+
+
+prueba %>% 
+  write.csv("01.Data/ventas_mmv_&_stock.csv")
+  
+```
+
+```{r}
+# 
+# 
+# ventas_dt <- as.data.table(ventas)
+# 
+# n_vin <- ventas_dt[,.N,by='vin'][order(N,decreasing = T),]
+# # Distribucion de VIN
+# n_vin[,.N,by=N]
+# 
+# ventas$id <- str_c(ventas$vin,'-',ventas$fecha_facturacion)
+# 
+# (ventas$id %>% unique %>% length)==nrow(ventas)
+# 
+# # Tipo de DOCUMENTO
+# 
+# ventas$numero_documento %>% str_length() %>% table(useNA = 'ifany')
+# 
+# # Creacion de Features
+# 
+# ventas$anio_facturacion <- year(ventas$fecha_facturacion)
+# ventas$marca_modelo <- str_c(ventas$marca,'-',ventas$modelo)
+# ventas$marca_modelo_version <- str_c(ventas$marca,'-',ventas$modelo,'-',ventas$version)
+# 
+# # Precio de Lista y Precio Final, costos.
+# # Mayor informacion en tipo de financiamiento
+# 
+# 
+# # Distribucion por años de las Marcas
+# 
+# 
+# ventas %>% 
+#   count(anio_facturacion,marca) %>% 
+#   pivot_wider(names_from = anio_facturacion,values_from = n)
+#   
+# ventas %>%
+#   count(anio_facturacion, marca) %>%
+#   mutate(anio_facturacion = str_c('anio_', anio_facturacion)) %>%
+#   group_by(anio_facturacion) %>%
+#   mutate(pct = n / sum(n)) %>%
+#   arrange(desc(pct)) %>%
+#   ungroup() %>%
+#   select(-n) %>%
+#   pivot_wider(names_from = anio_facturacion, values_from = pct) %>% 
+#   mutate(anio_2021 = percent(anio_2021),
+#          anio_2020 = percent(anio_2020),
+#          anio_2019 = percent(anio_2019)) %>% 
+#   arrange(desc(anio_2021))
+# 
+# 
+# ventas_marca_anio <- ventas %>%
+#   count(anio_facturacion, marca) %>%
+#   mutate(anio_facturacion = as.character(anio_facturacion)) %>%
+#   # mutate(anio_facturacion = str_c('anio_', anio_facturacion)) %>%
+#   group_by(anio_facturacion) %>%
+#   mutate(pct = n / sum(n)) %>%
+#   arrange(desc(pct)) %>%
+#   ungroup() %>%
+#   select(-n) %>% 
+#   mutate(pct = round(pct*100))
+# 
+# 
+# cols <- c("SUZUKI" = "gray", "CHANGAN" = "#32CD32",
+#           "RENAULT" = "#CD2626", "MAZDA" = "#CD2626",
+#           "JAC" = "#32CD32", "GREAT WALL" = "gray",
+#           "HAVAL" = "gray", "CITROEN" = "gray",
+#           "DS" = "gray"
+#           )
+# newggslopegraph(dataframe = ventas_marca_anio,
+#                 Times = anio_facturacion,
+#                 Measurement = pct,
+#                 Grouping = marca,
+#                 Title = "Evolucion de las Marcas ",
+#                 SubTitle = "Distribucion de los Pesos(%) por año",
+#                 Caption = NULL,
+#                 LineColor = cols,
+#                 XTextSize = 18,    # Size of the times
+#                 YTextSize = 3,     # Size of the groups
+#                 TitleTextSize = 15,
+#                 SubTitleTextSize = 10,
+#                 CaptionTextSize = 10,
+#                 TitleJustify = "Left",
+#                 # SubTitleJustify = "Left",
+#                 CaptionJustify = "left",
+#                 DataTextSize = 4,
+#                 LineThickness = 1,#Ancho de la Linea
+#                 DataLabelPadding = 0.2,
+#                 DataLabelLineSize = 0.5,
+#                 DataLabelFillColor = "#00AFBB",
+#                 ThemeChoice = 'ipsum')
+# 
+# 
+# ventas
+# 
+# 
+# 
+# ventas %>% 
+#   filter(anio_facturacion=='2021') %>% 
+#   crosstab(marca_modelo_version)
+# 
+# ventas_repel <- ventas %>% 
+#   filter(anio_facturacion=='2021') %>% 
+#   crosstab(marca_modelo_version) %>% 
+#   filter(order %in% c(10,30,50,100,200,300,400,494)) %>% 
+#   mutate(pcum=trunc(pcum),
+#          pcum=ifelse(order==494,100,pcum))
+#   
+# 
+# dist_mmv <- ventas %>% 
+#   filter(anio_facturacion=='2021') %>% 
+#   crosstab(marca_modelo_version) %>% 
+#   # filter(order %in% c(seq(10,490,20),494))
+#   filter(order %in% c(10,30,50,100,200,300,400,494))
+#   
+# ggplot(dist_mmv,aes(x=order,y=pcum))+
+#   geom_point(color='black',size=3)+
+#   geom_line(size=1.2,color='steelblue')+
+#   geom_label_repel(data = ventas_repel,
+#                    aes(x=order,y=pcum,label=str_c(pcum,'%')),
+#                    hjust=1)+
+#   geom_vline(data = ventas_repel,aes(xintercept=order,y=pcum),linetype='dotted')+
+#   theme_classic()+
+#   scale_x_continuous(breaks = c(10,30,50,100,200,300,400,494))+
+#   scale_y_continuous(breaks = seq(0,100,20),labels = seq(0,100,20))+
+#   labs(x='Cantidad de Autos(n)',
+#        y=NULL,
+#        subtitle=' Ventas(%)',
+#        title='Relacion Ventas y Cantidad de Autos - 2021')+
+#   theme(plot.subtitle = element_text(hjust = 0,size=12,face='bold'),
+#         axis.title.x = element_text(size=12,hjust = 1,face='bold'),
+#         axis.text = element_text(size=12),
+#         title = element_text(size=15),
+#         plot.title.position = 'plot')
+
+```
